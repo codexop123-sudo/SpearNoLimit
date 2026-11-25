@@ -75,7 +75,7 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
         // instantly, so jabs (and with them, Lunge) can be thrown out back-to-back.
         AttributeModifier modifier = new AttributeModifier(
                 attackSpeedModifierKey, 50.0, AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.HAND);
-        meta.addAttributeModifier(Attribute.GENERIC_ATTACK_SPEED, modifier);
+        meta.addAttributeModifier(Attribute.ATTACK_SPEED, modifier);
         meta.getPersistentDataContainer().set(boostedKey, PersistentDataType.BYTE, (byte) 1);
         item.setItemMeta(meta);
     }
@@ -93,7 +93,7 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
         }
         ItemMeta meta = item.getItemMeta();
         if (meta != null && meta.hasEnchant(lungeEnchant)) {
-            recentLungeHit.put(player.getUniqueId(), Bukkit.getCurrentTick());
+            recentLungeHit.put(player.getUniqueId(), (long) Bukkit.getCurrentTick());
         }
     }
 
