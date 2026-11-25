@@ -5,6 +5,9 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeModifier;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -12,24 +15,24 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.FoodLevelChangeEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
-import org.bukkit.configuration.file.YamlConfiguration;
+import java.util.UUID;
 
 public final class SpearNoLimit extends JavaPlugin implements Listener {
 
@@ -37,9 +40,10 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
     private NamespacedKey attackSpeedModifierKey;
     private Enchantment lungeEnchant;
 
-    // Ticks since each player last landed a hit with a Lunge-enchanted spear.
+    // Ticks since each player last triggered a Lunge-enchanted spear (hit or air).
     private final Map<UUID, Long> recentLungeHit = new HashMap<>();
-    private static final long LUNGE_HUNGER_WINDOW_TICKS = 3L;
+    private static final long LUNGE_HUNGER_WINDOW_TICKS = 10L;
+
     private File selectedFile;
     private final Set<UUID> selected = new HashSet<>();
 
@@ -49,6 +53,7 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
         attackSpeedModifierKey = new NamespacedKey(this, "spear_attack_speed_boost");
         selectedFile = new File(getDataFolder(), "selected.yml");
         loadSelected();
+
         lungeEnchant = Registry.ENCHANTMENT.get(NamespacedKey.minecraft("lunge"));
         if (lungeEnchant == null) {
             getLogger().warning("Could not find the 'lunge' enchantment in this server's registry. "
@@ -56,10 +61,6 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
         }
 
         getServer().getPluginManager().registerEvents(this, this);
-
-        // Periodically scan every online player's held item so a spear gets its
-        // cooldown removed whenever it ends up in a player's hand, however it got there
-        // (crafted, picked up, given, swapped from another slot, etc.).
         Bukkit.getScheduler().runTaskTimer(this, this::boostAllHeldSpears, 0L, 10L);
 
         getLogger().info("SpearNoLimit enabled.");
@@ -84,11 +85,9 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
     private void boostIfNeeded(ItemStack item) {
         ItemMeta meta = item.getItemMeta();
         if (meta == null || meta.getPersistentDataContainer().has(boostedKey, PersistentDataType.BYTE)) {
-            return; // Already boosted; don't stack another modifier on top.
+            return;
         }
 
-        // A large flat addition to attack speed makes the cooldown bar refill almost
-        // instantly, so jabs (and with them, Lunge) can be thrown out back-to-back.
         AttributeModifier modifier = new AttributeModifier(
                 attackSpeedModifierKey, 50.0, AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.HAND);
         meta.addAttributeModifier(Attribute.ATTACK_SPEED, modifier);
@@ -96,24 +95,62 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
         item.setItemMeta(meta);
     }
 
-    // ---------- Lunge hunger removal ----------
+    // ---------- Lunge hunger removal (Hit + Air) ----------
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onAttack(EntityDamageByEntityEvent event) {
-        if (lungeEnchant == null || !(event.getDamager() instanceof Player player)) {
+        if (event.getDamager() instanceof Player player) {
+            tryTriggerLungeProtection(player);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onInteract(PlayerInteractEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND) {
             return;
         }
-        if (!selected.contains(player.getUniqueId())) {
+        tryTriggerLungeProtection(event.getPlayer());
+    }
+
+    private void tryTriggerLungeProtection(Player player) {
+        if (lungeEnchant == null || !selected.contains(player.getUniqueId())) {
             return;
         }
+
         ItemStack item = player.getInventory().getItemInMainHand();
         if (!isSpear(item.getType())) {
             return;
         }
+
         ItemMeta meta = item.getItemMeta();
-        if (meta != null && meta.hasEnchant(lungeEnchant)) {
-            recentLungeHit.put(player.getUniqueId(), (long) Bukkit.getCurrentTick());
+        if (meta == null || !meta.hasEnchant(lungeEnchant)) {
+            return;
         }
+
+        recentLungeHit.put(player.getUniqueId(), (long) Bukkit.getCurrentTick());
+
+        final int lockedFood = player.getFoodLevel();
+        final float lockedSaturation = player.getSaturation();
+        final UUID uuid = player.getUniqueId();
+
+        new BukkitRunnable() {
+            int ticksLeft = 8;
+
+            @Override
+            public void run() {
+                Player p = Bukkit.getPlayer(uuid);
+                if (p == null || !p.isOnline() || ticksLeft-- <= 0) {
+                    cancel();
+                    return;
+                }
+                if (p.getFoodLevel() < lockedFood) {
+                    p.setFoodLevel(lockedFood);
+                }
+                if (p.getSaturation() < lockedSaturation) {
+                    p.setSaturation(lockedSaturation);
+                }
+            }
+        }.runTaskTimer(this, 1L, 1L);
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -122,7 +159,7 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
             return;
         }
         if (event.getFoodLevel() >= player.getFoodLevel()) {
-            return; // Not a decrease; nothing to do.
+            return;
         }
 
         Long lastHit = recentLungeHit.get(player.getUniqueId());
@@ -130,6 +167,8 @@ public final class SpearNoLimit extends JavaPlugin implements Listener {
             event.setCancelled(true);
         }
     }
+
+    // ---------- Commands & Persistence ----------
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
