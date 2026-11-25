@@ -1,0 +1,5 @@
+name: SpearNoLimit
+version: '1.0'
+main: me.spearnolimit.SpearNoLimit
+api-version: '26.3'
+description: Removes the Spear's jab cooldown and the hunger cost of Lunge attacks.
